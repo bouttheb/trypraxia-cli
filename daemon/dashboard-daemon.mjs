@@ -2333,18 +2333,33 @@ async function maybeSyncLocalAgentSessions() {
 }
 
 async function backfillLocalAgentSessions() {
-  const sessions = scanLocalAgentSessions(Date.now(), {
+  const allSessions = scanLocalAgentSessions(Date.now(), {
     maxAgeMs: Number.MAX_SAFE_INTEGER,
     maxFiles: 100_000,
     maxSessions: 100_000,
     ignoreSeen: true,
   });
-  log(`backfilling ${sessions.length} local Codex/Claude session(s) across explicit fleet grants`);
+  const offset = Math.max(0, Number.parseInt(argValue("--offset", "0"), 10) || 0);
+  const sessions = allSessions.slice(offset);
+  const concurrency = Math.max(1, Math.min(6, Number.parseInt(
+    argValue("--concurrency", process.env.PRAXIA_SESSION_BACKFILL_CONCURRENCY || "3"),
+    10,
+  ) || 3));
+  log(`backfilling ${sessions.length} local Codex/Claude session(s) from offset ${offset} across explicit fleet grants with concurrency ${concurrency}`);
   let synced = 0;
-  for (const [index, session] of sessions.entries()) {
-    if (await syncLocalAgentSession(session)) synced += 1;
-    if ((index + 1) % 10 === 0) log(`session backfill progress: ${index + 1}/${sessions.length} (${synced} synchronized)`);
-  }
+  let completed = 0;
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const session = sessions[index];
+      if (!session) return;
+      if (await syncLocalAgentSession(session)) synced += 1;
+      completed += 1;
+      if (completed % 10 === 0) log(`session backfill progress: ${completed}/${sessions.length} (${synced} synchronized; absolute ${offset + completed}/${allSessions.length})`);
+    }
+  }));
   log(`session backfill complete: ${synced}/${sessions.length} session receipt(s) synchronized`);
 }
 

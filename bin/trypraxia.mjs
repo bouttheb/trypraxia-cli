@@ -35,6 +35,10 @@ Options for daemon login:
   --code <code>        Pairing code from the hosted dashboard.
   --daemon-id <id>     Optional machine id. Defaults to this host name.
   --label <label>      Optional display label for this machine.
+
+Options for daemon backfill-sessions:
+  --offset <count>     Resume after a known number of newest sessions.
+  --concurrency <1-6> Parallel upload workers. Defaults to 3.
 `);
 }
 
