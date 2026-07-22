@@ -15,12 +15,12 @@ function printHelp() {
   console.log(`Praxia CLI
 
 Usage:
-  npx --yes trypraxia daemon login --url https://app.trypraxia.com --code ABCD-EFGH-IJKL
-  npx --yes trypraxia daemon start
-  npx --yes trypraxia daemon backfill-sessions
-  npx --yes trypraxia daemon doctor
-  npx --yes trypraxia github login
-  npx --yes trypraxia github status
+  npx --yes github:bouttheb/trypraxia-cli daemon login --url https://app.trypraxia.com --code ABCD-EFGH-IJKL
+  npx --yes github:bouttheb/trypraxia-cli daemon start
+  npx --yes github:bouttheb/trypraxia-cli daemon backfill-sessions
+  npx --yes github:bouttheb/trypraxia-cli daemon doctor
+  npx --yes github:bouttheb/trypraxia-cli github login
+  npx --yes github:bouttheb/trypraxia-cli github status
 
 Commands:
   daemon login    Pair this machine with a Praxia Cloud workspace.
@@ -101,7 +101,7 @@ function printGithubStatus({ failIfDisconnected = true } = {}) {
   }
   if (!identity.login) {
     console.error("GitHub CLI is installed, but this machine is not signed in.");
-    console.error("Run `npx --yes trypraxia github login`.");
+    console.error("Run `npx --yes github:bouttheb/trypraxia-cli github login`.");
     if (failIfDisconnected) process.exitCode = 1;
     return null;
   }
@@ -196,7 +196,7 @@ function printDoctor() {
   console.log(`  - Account: ${github.login ? `@${github.login}` : "not connected"}`);
 
   if (!hasUsableFleetConfig && !hasDeviceToken && !hasLegacyKey) {
-    console.log("\nRun `npx --yes trypraxia daemon login --url <url> --code <code>` to pair this machine.");
+    console.log("\nRun `npx --yes github:bouttheb/trypraxia-cli daemon login --url <url> --code <code>` to pair this machine.");
     process.exitCode = 1;
   }
 }

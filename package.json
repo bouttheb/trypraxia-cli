@@ -1,6 +1,6 @@
 {
   "name": "trypraxia",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Praxia daemon CLI for pairing a local machine with Praxia Cloud.",
   "license": "AGPL-3.0",
   "type": "module",

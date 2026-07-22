@@ -10,12 +10,12 @@ completion percentage after each run.
 ## Usage
 
 ```bash
-npx --yes trypraxia daemon login --url https://app.trypraxia.com --code <code>
+npx --yes github:bouttheb/trypraxia-cli daemon login --url https://app.trypraxia.com --code <code>
 gh auth login --hostname github.com --git-protocol https --web
 gh auth status --hostname github.com
-npx --yes trypraxia daemon doctor
-npx --yes trypraxia daemon backfill-sessions
-npx --yes trypraxia daemon start
+npx --yes github:bouttheb/trypraxia-cli daemon doctor
+npx --yes github:bouttheb/trypraxia-cli daemon backfill-sessions
+npx --yes github:bouttheb/trypraxia-cli daemon start
 ```
 
 The daemon stores its device token in `~/.praxia-cloud/dashboard.env`. Keep

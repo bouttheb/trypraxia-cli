@@ -252,7 +252,7 @@ function shouldLogContextError(context, message, channel = "poll") {
   contextErrorState.set(key, { message, loggedAt: now, suppressed: 0 });
   if (suppressed > 0) log(`(${suppressed} identical ${channel} errors suppressed for ${context.label} in the last 10m)`);
   if (/daemon device token required|fleet device token|not authorized for that organization|401|403/i.test(message)) {
-    log(`ACTION NEEDED: ${context.label} is not authenticated. Pair this machine for that organization: npx --yes trypraxia daemon login --url ${DASHBOARD_URL} --code <code>`);
+    log(`ACTION NEEDED: ${context.label} is not authenticated. Pair this machine for that organization: npx --yes github:bouttheb/trypraxia-cli daemon login --url ${DASHBOARD_URL} --code <code>`);
   }
   return true;
 }
@@ -750,7 +750,7 @@ async function pair() {
   const daemonId = argValue("--daemon-id", process.env.DAEMON_ID || generatedDaemonId);
   const label = argValue("--label", daemonId);
   if (!code) {
-    console.error("Pairing code required. Usage: npx --yes trypraxia daemon login --url https://app.example.com --code ABCD-EFGH-IJKL");
+    console.error("Pairing code required. Usage: npx --yes github:bouttheb/trypraxia-cli daemon login --url https://app.example.com --code ABCD-EFGH-IJKL");
     process.exit(1);
   }
 
@@ -814,7 +814,7 @@ async function pair() {
   console.log(`Praxia Cloud daemon paired as ${payload.daemonId || daemonId} for ${orgLabel}.`);
   console.log(`This fleet device now has ${organizationCount} explicit organization grant(s).`);
   console.log(`Wrote ${envPath}`);
-  console.log("Start it with: npx --yes trypraxia daemon start");
+  console.log("Start it with: npx --yes github:bouttheb/trypraxia-cli daemon start");
 }
 
 function localizePath(storedPath) {
@@ -2889,7 +2889,7 @@ async function main() {
     return;
   }
   if (POLL_CONTEXTS.length === 0) {
-    console.error("DASHBOARD_FLEET_TOKEN, DASHBOARD_DEVICE_TOKEN, or DASHBOARD_WRITE_KEY is required. Run `npx --yes trypraxia daemon login --url <url> --code <code>` first.");
+    console.error("DASHBOARD_FLEET_TOKEN, DASHBOARD_DEVICE_TOKEN, or DASHBOARD_WRITE_KEY is required. Run `npx --yes github:bouttheb/trypraxia-cli daemon login --url <url> --code <code>` first.");
     process.exit(1);
   }
   if (command === "backfill-sessions") {
