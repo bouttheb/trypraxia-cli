@@ -2212,6 +2212,7 @@ async function resolveSessionRoute(session) {
   const cached = sessionRouteCache.get(key);
   if (shouldReuseSessionRoute(cached, routingKey, Date.now(), SESSION_ROUTE_CACHE_MS)) return cached;
   let failedProbes = 0;
+  let matchedRoute = null;
   for (const context of POLL_CONTEXTS) {
     try {
       const response = await api(context, "POST", "/api/daemon/run-events", {
@@ -2221,10 +2222,27 @@ async function resolveSessionRoute(session) {
         externalSessionId: session.sessionId,
         ...routing,
       }, 15_000);
-      if (response?.ok === true && response.projectId) {
-        const route = { context, matched: true, projectId: response.projectId, routingKey, checkedAt: Date.now(), locked: false };
+      if (response?.ok === true && response.sessionOwned === true) {
+        const route = {
+          context,
+          matched: Boolean(response.projectId),
+          projectId: response.projectId || null,
+          routingKey,
+          checkedAt: Date.now(),
+          locked: false,
+        };
         sessionRouteCache.set(key, route);
         return route;
+      }
+      if (response?.ok === true && response.projectId && !matchedRoute) {
+        matchedRoute = {
+          context,
+          matched: true,
+          projectId: response.projectId,
+          routingKey,
+          checkedAt: Date.now(),
+          locked: false,
+        };
       }
     } catch {
       failedProbes += 1;
@@ -2236,6 +2254,10 @@ async function resolveSessionRoute(session) {
   if (failedProbes > 0) {
     if (cached) return cached;
     throw new Error(`session route deferred: ${failedProbes}/${POLL_CONTEXTS.length} organization probe(s) failed`);
+  }
+  if (matchedRoute) {
+    sessionRouteCache.set(key, matchedRoute);
+    return matchedRoute;
   }
   const route = { context: POLL_CONTEXTS[0], matched: false, projectId: null, routingKey, checkedAt: Date.now(), locked: false };
   sessionRouteCache.set(key, route);
