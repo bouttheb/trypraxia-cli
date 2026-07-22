@@ -14,6 +14,7 @@ import {
 } from "./run-capture.mjs";
 import { preflightRepo } from "./repo-preflight.mjs";
 import { readSessionTranscript, scanLocalAgentSessions } from "./session-bridge.mjs";
+import { lockSessionRoute, sessionRouteCacheKey, shouldReuseSessionRoute } from "./session-routing.mjs";
 import { createTelemetry } from "./telemetry.mjs";
 import { untrustedContentPolicy, wrapUntrustedContent } from "./untrusted-content-policy.mjs";
 
@@ -159,6 +160,7 @@ const AVAILABLE_AGENTS = ["claude", "codex", "gemini", "kimi", "opencode", "goos
 let lastSessionSyncAt = 0;
 const sessionRouteCache = new Map();
 const sessionUploadOffsets = new Map();
+const sessionRetryQueue = new Map();
 const SESSION_ROUTE_CACHE_MS = 5 * 60_000;
 // Transparent Runs raw capture (docs/TRANSPARENT_RUNS.md). RUN_CAPTURE=0
 // disables both command capture and session-bridge transcript upload.
@@ -2205,9 +2207,11 @@ function sessionRoutingPayload(session) {
 
 async function resolveSessionRoute(session) {
   const routing = sessionRoutingPayload(session);
-  const key = routing.workingDirectory || "__unattributed__";
+  const key = sessionRouteCacheKey(session);
+  const routingKey = routing.workingDirectory || "__unattributed__";
   const cached = sessionRouteCache.get(key);
-  if (cached && Date.now() - cached.checkedAt < SESSION_ROUTE_CACHE_MS) return cached;
+  if (shouldReuseSessionRoute(cached, routingKey, Date.now(), SESSION_ROUTE_CACHE_MS)) return cached;
+  let failedProbes = 0;
   for (const context of POLL_CONTEXTS) {
     try {
       const response = await api(context, "POST", "/api/daemon/run-events", {
@@ -2218,15 +2222,22 @@ async function resolveSessionRoute(session) {
         ...routing,
       }, 15_000);
       if (response?.ok === true && response.projectId) {
-        const route = { context, matched: true, projectId: response.projectId, checkedAt: Date.now() };
+        const route = { context, matched: true, projectId: response.projectId, routingKey, checkedAt: Date.now(), locked: false };
         sessionRouteCache.set(key, route);
         return route;
       }
     } catch {
-      // Try the next explicit organization grant.
+      failedProbes += 1;
     }
   }
-  const route = { context: POLL_CONTEXTS[0], matched: false, projectId: null, checkedAt: Date.now() };
+  // A failed probe may be the organization that owns this repository. Never
+  // downgrade to the first workspace on partial evidence; retain an existing
+  // route or defer this receipt until every grant can answer.
+  if (failedProbes > 0) {
+    if (cached) return cached;
+    throw new Error(`session route deferred: ${failedProbes}/${POLL_CONTEXTS.length} organization probe(s) failed`);
+  }
+  const route = { context: POLL_CONTEXTS[0], matched: false, projectId: null, routingKey, checkedAt: Date.now(), locked: false };
   sessionRouteCache.set(key, route);
   return route;
 }
@@ -2273,11 +2284,23 @@ async function uploadSessionTranscript(session, route) {
 }
 
 async function syncLocalAgentSession(session) {
-  const route = await resolveSessionRoute(session);
+  const routeKey = sessionRouteCacheKey(session);
+  let route;
+  try {
+    route = await resolveSessionRoute(session);
+  } catch (error) {
+    log(`session route deferred: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+  let transcriptStored = true;
   if (RUN_CAPTURE_ENABLED) {
     try {
-      session.metadata.transcriptStored = await uploadSessionTranscript(session, route);
-    } catch {}
+      transcriptStored = await uploadSessionTranscript(session, route);
+      session.metadata.transcriptStored = transcriptStored;
+    } catch {
+      transcriptStored = false;
+      session.metadata.transcriptStored = false;
+    }
   }
   const routing = sessionRoutingPayload(session);
   const payload = {
@@ -2291,7 +2314,11 @@ async function syncLocalAgentSession(session) {
   };
   try {
     await api(route.context, "POST", "/api/operator/activity", payload);
-    return true;
+    // Once any part of a session is stored, its organization is immutable for
+    // this daemon process. A later cwd change or transient probe outage must
+    // not fork one transcript across tenants.
+    lockSessionRoute(sessionRouteCache, routeKey, route);
+    return transcriptStored;
   } catch (error) {
     log(`session activity sync skipped: ${error instanceof Error ? error.message : String(error)}`);
     return false;
@@ -2325,11 +2352,24 @@ async function maybeSyncLocalAgentSessions() {
   lastSessionSyncAt = now;
   // Process one changed transcript per pass so a first-run backlog cannot
   // delay the actively changing session for minutes.
-  const sessions = scanLocalAgentSessions(now, { maxSessions: 1 });
+  const queued = sessionRetryQueue.values().next().value;
+  const scanned = scanLocalAgentSessions(now, { maxSessions: 1 });
+  const sessions = [queued, ...scanned].filter((session, index, values) =>
+    session && values.findIndex((candidate) => candidate?.evidence?.sessionFile === session.evidence?.sessionFile) === index,
+  );
+  let synced = 0;
   for (const session of sessions) {
-    await syncLocalAgentSession(session);
+    const key = session.evidence?.sessionFile || sessionRouteCacheKey(session);
+    if (await syncLocalAgentSession(session)) {
+      sessionRetryQueue.delete(key);
+      synced += 1;
+    } else {
+      sessionRetryQueue.delete(key);
+      sessionRetryQueue.set(key, session);
+    }
   }
-  if (sessions.length) log(`synced ${sessions.length} Codex/Claude session receipt${sessions.length === 1 ? "" : "s"}`);
+  if (synced) log(`synced ${synced} Codex/Claude session receipt${synced === 1 ? "" : "s"}`);
+  if (sessions.length > synced) log(`deferred ${sessions.length - synced} session receipt${sessions.length - synced === 1 ? "" : "s"} for retry`);
 }
 
 async function backfillLocalAgentSessions() {

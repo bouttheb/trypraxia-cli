@@ -1,6 +1,6 @@
 {
   "name": "trypraxia",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Praxia daemon CLI for pairing a local machine with Praxia Cloud.",
   "license": "AGPL-3.0",
   "type": "module",
@@ -21,7 +21,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bouttheb/praxia-cloud.git"
+    "url": "git+https://github.com/bouttheb/trypraxia-cli.git"
   },
   "homepage": "https://trypraxia.com",
   "bugs": {
