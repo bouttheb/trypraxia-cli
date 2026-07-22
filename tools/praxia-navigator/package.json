@@ -1,0 +1,24 @@
+{
+  "name": "@praxia/navigator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "praxia-navigator": "./bin/praxia-navigator.mjs"
+  },
+  "scripts": {
+    "index": "node ./bin/praxia-navigator.mjs index",
+    "plan": "node ./bin/praxia-navigator.mjs plan",
+    "serve": "node ./bin/praxia-navigator.mjs serve",
+    "queue": "node ./bin/praxia-navigator.mjs queue",
+    "work": "node ./bin/praxia-navigator.mjs work",
+    "handoff": "node ./bin/praxia-navigator.mjs handoff",
+    "ingest": "node ./bin/praxia-navigator.mjs ingest",
+    "loop": "node ./bin/praxia-navigator.mjs loop",
+    "report": "node ./bin/praxia-navigator.mjs report",
+    "test": "node ./test/navigator.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
