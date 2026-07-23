@@ -27,5 +27,5 @@ receives only the authenticated username and connection state in daemon
 heartbeats; it never receives the GitHub token.
 
 The running daemon synchronizes changed Codex and Claude Code sessions every
-five seconds. Run `daemon backfill-sessions` once after pairing to import all
-existing local session history through the same organization-scoped route.
+five seconds and automatically imports existing local session history after
+pairing. Use `daemon backfill-sessions` only to force an immediate manual sweep.
