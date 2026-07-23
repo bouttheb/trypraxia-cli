@@ -70,7 +70,7 @@ const SESSION_BACKFILL_REFRESH_MS = Math.max(
 );
 const SESSION_UPLOAD_STATE_PATH = join(homedir(), ".praxia-cloud", "session-upload-offsets.json");
 const SESSION_BACKFILL_STATE_PATH = join(homedir(), ".praxia-cloud", "session-backfill-state.json");
-const VERSION = "praxia-cloud-daemon-v1-orchestrator.6";
+const VERSION = "praxia-cloud-daemon-v1-orchestrator.7";
 // Use process isolation automatically when a reviewed agent image is present;
 // otherwise preserve the reversible Git-worktree boundary. Mutating work is
 // never allowed to silently fall back to the host checkout.
@@ -2611,7 +2611,8 @@ async function uploadSessionTranscript(session, route) {
     sessionUploadOffsets.set(sessionFile, lastLine);
     persistSessionUploadOffsets();
     return true;
-  } catch {
+  } catch (error) {
+    log(`session transcript upload deferred: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   }
 }
