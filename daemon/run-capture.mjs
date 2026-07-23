@@ -37,7 +37,12 @@ const REDACTION_PATTERNS = [
 ];
 
 export function redactText(value) {
-  let out = String(value);
+  // PostgreSQL json/jsonb rejects the NUL code point even though it is valid
+  // in JSON strings. Tool output can contain raw binary fragments (for
+  // example .DS_Store bytes), so normalize NULs before a captured event ever
+  // leaves the daemon. The API repeats this normalization as a trust-boundary
+  // safeguard for older daemons and other capture clients.
+  let out = String(value).replaceAll("\u0000", "[NUL]");
   for (const [pattern, replacement] of REDACTION_PATTERNS) out = out.replace(pattern, replacement);
   return out;
 }
