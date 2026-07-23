@@ -64,7 +64,13 @@ const POLL_INTERVAL_MS = Number(process.env.DAEMON_POLL_INTERVAL_MS || 5000);
 const DAEMON_CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.DAEMON_CONCURRENCY || 2)));
 const HEARTBEAT_INTERVAL_MS = Number(process.env.DAEMON_HEARTBEAT_INTERVAL_MS || 15_000);
 const SESSION_SYNC_INTERVAL_MS = Math.max(2_000, Number(process.env.PRAXIA_SESSION_SYNC_INTERVAL_MS || 5_000));
-const VERSION = "praxia-cloud-daemon-v1-orchestrator.4";
+const SESSION_BACKFILL_REFRESH_MS = Math.max(
+  60_000,
+  Number(process.env.PRAXIA_SESSION_BACKFILL_REFRESH_MS || 24 * 60 * 60_000),
+);
+const SESSION_UPLOAD_STATE_PATH = join(homedir(), ".praxia-cloud", "session-upload-offsets.json");
+const SESSION_BACKFILL_STATE_PATH = join(homedir(), ".praxia-cloud", "session-backfill-state.json");
+const VERSION = "praxia-cloud-daemon-v1-orchestrator.5";
 // Use process isolation automatically when a reviewed agent image is present;
 // otherwise preserve the reversible Git-worktree boundary. Mutating work is
 // never allowed to silently fall back to the host checkout.
@@ -184,8 +190,21 @@ const AVAILABLE_AGENTS = ["claude", "codex", "gemini", "kimi", "opencode", "goos
 let lastSessionSyncAt = 0;
 const cloudProjectWorkingDirs = new Set();
 const sessionRouteCache = new Map();
-const sessionUploadOffsets = new Map();
+const sessionUploadOffsets = new Map(
+  Object.entries(readJsonFileSafely(SESSION_UPLOAD_STATE_PATH, {})).filter(
+    ([path, line]) => typeof path === "string" && Number.isInteger(line) && line >= 0,
+  ),
+);
 const sessionRetryQueue = new Map();
+const sessionSyncHealth = {
+  lastScanAt: null,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  lastError: null,
+  totalSynced: 0,
+  totalDeferred: 0,
+  backfill: { status: "pending", startedAt: null, completedAt: null, total: 0, synced: 0 },
+};
 const SESSION_ROUTE_CACHE_MS = 5 * 60_000;
 // Transparent Runs raw capture (docs/TRANSPARENT_RUNS.md). RUN_CAPTURE=0
 // disables both command capture and session-bridge transcript upload.
@@ -397,6 +416,23 @@ function navigatorRoot() {
 function readJsonFile(path, fallback) {
   if (!existsSync(path)) return fallback;
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function readJsonFileSafely(path, fallback) {
+  try {
+    return readJsonFile(path, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+function writePrivateJson(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function persistSessionUploadOffsets() {
+  writePrivateJson(SESSION_UPLOAD_STATE_PATH, Object.fromEntries(sessionUploadOffsets));
 }
 
 function listNavigatorDir(root, relativePath) {
@@ -772,6 +808,23 @@ async function api(context, method, path, body, timeoutMs = null) {
     throw new Error(payload?.error || `${method} ${path} failed with HTTP ${response.status}`);
   }
   return payload;
+}
+
+async function downloadCommandContextFile(context, path) {
+  const headers = { authorization: `Bearer ${context.authToken}` };
+  if (context.orgId) headers["x-praxia-org-id"] = context.orgId;
+  if (context.organizationId) headers["x-praxia-organization-id"] = context.organizationId;
+  const response = await fetch(new URL(path, DASHBOARD_URL), {
+    headers,
+    redirect: "follow",
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`context file download failed with HTTP ${response.status}`);
+  const announcedBytes = Number(response.headers.get("content-length") || 0);
+  if (announcedBytes > 12 * 1024 * 1024) throw new Error("context file exceeds the 12 MB limit");
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > 12 * 1024 * 1024) throw new Error("context file exceeds the 12 MB limit");
+  return bytes;
 }
 
 async function pair() {
@@ -2520,6 +2573,7 @@ async function uploadSessionTranscript(session, route) {
   const { events: transcriptEvents, lastLine } = await readSessionTranscript(sessionFile, { afterLine });
   if (transcriptEvents.length === 0) {
     sessionUploadOffsets.set(sessionFile, lastLine);
+    persistSessionUploadOffsets();
     return true;
   }
   const context = route.context;
@@ -2555,6 +2609,7 @@ async function uploadSessionTranscript(session, route) {
       start += events.length;
     }
     sessionUploadOffsets.set(sessionFile, lastLine);
+    persistSessionUploadOffsets();
     return true;
   } catch {
     return false;
@@ -2639,10 +2694,12 @@ async function maybeSyncLocalAgentSessions() {
   const now = Date.now();
   if (now - lastSessionSyncAt < SESSION_SYNC_INTERVAL_MS || POLL_CONTEXTS.length === 0) return;
   lastSessionSyncAt = now;
-  // Process one changed transcript per pass so a first-run backlog cannot
-  // delay the actively changing session for minutes.
+  sessionSyncHealth.lastScanAt = new Date(now).toISOString();
+  // The automatic all-history backfill owns first-run backlog. A bounded live
+  // batch keeps several simultaneously active Codex/Claude sessions current
+  // without letting transcript work monopolize command polling.
   const queued = sessionRetryQueue.values().next().value;
-  const scanned = scanLocalAgentSessions(now, { maxSessions: 1 });
+  const scanned = scanLocalAgentSessions(now, { maxSessions: 8 });
   const sessions = [queued, ...scanned].filter(
     (session, index, values) =>
       session &&
@@ -2659,25 +2716,40 @@ async function maybeSyncLocalAgentSessions() {
       sessionRetryQueue.set(key, session);
     }
   }
+  sessionSyncHealth.totalSynced += synced;
+  sessionSyncHealth.totalDeferred += sessions.length - synced;
+  if (synced > 0 || sessions.length === 0) {
+    sessionSyncHealth.lastSuccessAt = new Date().toISOString();
+    sessionSyncHealth.lastError = null;
+  }
+  if (sessions.length > synced) {
+    sessionSyncHealth.lastFailureAt = new Date().toISOString();
+    sessionSyncHealth.lastError = `${sessions.length - synced} session receipt(s) deferred`;
+  }
   if (synced) log(`synced ${synced} Codex/Claude session receipt${synced === 1 ? "" : "s"}`);
   if (sessions.length > synced)
     log(`deferred ${sessions.length - synced} session receipt${sessions.length - synced === 1 ? "" : "s"} for retry`);
 }
 
-async function backfillLocalAgentSessions() {
+async function backfillLocalAgentSessions(options = {}) {
   const allSessions = scanLocalAgentSessions(Date.now(), {
     maxAgeMs: Number.MAX_SAFE_INTEGER,
     maxFiles: 100_000,
     maxSessions: 100_000,
     ignoreSeen: true,
   });
-  const offset = Math.max(0, Number.parseInt(argValue("--offset", "0"), 10) || 0);
+  const offset = Math.max(0, Number.parseInt(String(options.offset ?? argValue("--offset", "0")), 10) || 0);
   const sessions = allSessions.slice(offset);
   const concurrency = Math.max(
     1,
     Math.min(
       6,
-      Number.parseInt(argValue("--concurrency", process.env.PRAXIA_SESSION_BACKFILL_CONCURRENCY || "3"), 10) || 3,
+      Number.parseInt(
+        String(
+          options.concurrency ?? argValue("--concurrency", process.env.PRAXIA_SESSION_BACKFILL_CONCURRENCY || "3"),
+        ),
+        10,
+      ) || 3,
     ),
   );
   log(
@@ -2693,7 +2765,12 @@ async function backfillLocalAgentSessions() {
         nextIndex += 1;
         const session = sessions[index];
         if (!session) return;
-        if (await syncLocalAgentSession(session)) synced += 1;
+        if (await syncLocalAgentSession(session)) {
+          synced += 1;
+        } else {
+          const key = session.evidence?.sessionFile || sessionRouteCacheKey(session);
+          sessionRetryQueue.set(key, session);
+        }
         completed += 1;
         if (completed % 10 === 0)
           log(
@@ -2703,6 +2780,48 @@ async function backfillLocalAgentSessions() {
     }),
   );
   log(`session backfill complete: ${synced}/${sessions.length} session receipt(s) synchronized`);
+  return { total: sessions.length, synced, offset, discovered: allSessions.length };
+}
+
+async function automaticSessionBackfill() {
+  const previous = readJsonFileSafely(SESSION_BACKFILL_STATE_PATH, null);
+  const previousCompletedAt = previous?.complete ? Date.parse(previous.completedAt || "") : Number.NaN;
+  if (Number.isFinite(previousCompletedAt) && Date.now() - previousCompletedAt < SESSION_BACKFILL_REFRESH_MS) {
+    sessionSyncHealth.backfill = {
+      status: "current",
+      startedAt: previous.startedAt || null,
+      completedAt: previous.completedAt,
+      total: Number(previous.total || 0),
+      synced: Number(previous.synced || 0),
+    };
+    return;
+  }
+  const startedAt = new Date().toISOString();
+  sessionSyncHealth.backfill = { status: "running", startedAt, completedAt: null, total: 0, synced: 0 };
+  try {
+    const result = await backfillLocalAgentSessions({ concurrency: 2 });
+    const completedAt = new Date().toISOString();
+    const complete = result.synced === result.total;
+    sessionSyncHealth.backfill = {
+      status: complete ? "current" : "partial",
+      startedAt,
+      completedAt,
+      total: result.total,
+      synced: result.synced,
+    };
+    writePrivateJson(SESSION_BACKFILL_STATE_PATH, { ...sessionSyncHealth.backfill, complete });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sessionSyncHealth.backfill = {
+      ...sessionSyncHealth.backfill,
+      status: "failed",
+      completedAt: new Date().toISOString(),
+    };
+    sessionSyncHealth.lastFailureAt = new Date().toISOString();
+    sessionSyncHealth.lastError = message;
+    writePrivateJson(SESSION_BACKFILL_STATE_PATH, { ...sessionSyncHealth.backfill, complete: false, error: message });
+    log(`automatic session backfill failed: ${message}`);
+  }
 }
 
 async function sessionSyncLoop() {
@@ -2710,7 +2829,10 @@ async function sessionSyncLoop() {
     try {
       await maybeSyncLocalAgentSessions();
     } catch (error) {
-      log(`session sync error: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      sessionSyncHealth.lastFailureAt = new Date().toISOString();
+      sessionSyncHealth.lastError = message;
+      log(`session sync error: ${message}`);
     }
     await new Promise((resolveTimer) => setTimeout(resolveTimer, SESSION_SYNC_INTERVAL_MS));
   }
@@ -2826,7 +2948,13 @@ async function tick(context) {
     }
   }
 
-  const roomAttachmentDir = materializeProjectFiles(command);
+  const roomAttachmentDir = await materializeProjectFiles(command, {
+    download: (attachment) => downloadCommandContextFile(context, attachment.download_url),
+    onError: (attachment, error) =>
+      log(
+        `command ${command.id}: source file ${attachment?.name || attachment?.id || "unknown"} unavailable (${error instanceof Error ? error.message : String(error)})`,
+      ),
+  });
 
   const requestedModel = typeof command.model === "string" && command.model.trim() ? command.model.trim() : null;
   const requestedEffort =
@@ -3155,6 +3283,19 @@ async function heartbeatLoop() {
               workingDirs: repoCapabilities.workingDirs,
               repoNames: repoCapabilities.repoNames,
               repos: repoCapabilities.repos,
+              sessionSync: {
+                enabled: true,
+                intervalMs: SESSION_SYNC_INTERVAL_MS,
+                lastScanAt: sessionSyncHealth.lastScanAt,
+                lastSuccessAt: sessionSyncHealth.lastSuccessAt,
+                lastFailureAt: sessionSyncHealth.lastFailureAt,
+                lastError: sessionSyncHealth.lastError,
+                pendingRetries: sessionRetryQueue.size,
+                totalSynced: sessionSyncHealth.totalSynced,
+                totalDeferred: sessionSyncHealth.totalDeferred,
+                persistedOffsets: sessionUploadOffsets.size,
+                backfill: sessionSyncHealth.backfill,
+              },
             },
             quotaState: Object.fromEntries(
               healthyAgents.map((agent) => [
@@ -3393,6 +3534,7 @@ async function main() {
   await preflightAgentAuth();
   void authRecoveryLoop();
   void sessionSyncLoop();
+  void automaticSessionBackfill();
   const workerLoop = async (workerId) => {
     let contextOffset = workerId % POLL_CONTEXTS.length;
     while (true) {
