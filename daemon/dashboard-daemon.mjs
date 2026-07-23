@@ -70,7 +70,7 @@ const SESSION_BACKFILL_REFRESH_MS = Math.max(
 );
 const SESSION_UPLOAD_STATE_PATH = join(homedir(), ".praxia-cloud", "session-upload-offsets.json");
 const SESSION_BACKFILL_STATE_PATH = join(homedir(), ".praxia-cloud", "session-backfill-state.json");
-const VERSION = "praxia-cloud-daemon-v1-orchestrator.5";
+const VERSION = "praxia-cloud-daemon-v1-orchestrator.6";
 // Use process isolation automatically when a reviewed agent image is present;
 // otherwise preserve the reversible Git-worktree boundary. Mutating work is
 // never allowed to silently fall back to the host checkout.
@@ -686,7 +686,7 @@ ${latestUpdate || "No prior update logged."}
 ${command.last_run?.title ? `\nLast captured run for this project: ${command.last_run.title}${command.last_run.summary ? ` — ${command.last_run.summary}` : ""} (consult prior transcripts with praxia_search_runs / praxia_get_run before rediscovering).\n` : ""}
 ${formatConversationHistory(command.history)}
 
-${command.source === "project_room" ? formatProjectRoomContext(command) : ""}
+${formatProjectRoomContext(command)}
 
 ${referencedCommands}
 
@@ -2725,6 +2725,20 @@ async function maybeSyncLocalAgentSessions() {
   if (sessions.length > synced) {
     sessionSyncHealth.lastFailureAt = new Date().toISOString();
     sessionSyncHealth.lastError = `${sessions.length - synced} session receipt(s) deferred`;
+  }
+  if (
+    sessionRetryQueue.size === 0 &&
+    sessionSyncHealth.backfill.status === "partial" &&
+    sessionSyncHealth.backfill.completedAt
+  ) {
+    sessionSyncHealth.backfill = {
+      ...sessionSyncHealth.backfill,
+      status: "current",
+      synced: sessionSyncHealth.backfill.total,
+    };
+    writePrivateJson(SESSION_BACKFILL_STATE_PATH, { ...sessionSyncHealth.backfill, complete: true });
+    sessionSyncHealth.lastError = null;
+    log("session backfill is current after deferred receipts recovered");
   }
   if (synced) log(`synced ${synced} Codex/Claude session receipt${synced === 1 ? "" : "s"}`);
   if (sessions.length > synced)
