@@ -158,6 +158,7 @@ const POLL_CONTEXTS = buildPollContexts();
 const AVAILABLE_AGENTS = ["claude", "codex", "gemini", "kimi", "opencode", "goose"]
   .filter((agent) => executableAvailable(commandForAgent(agent, "").bin));
 let lastSessionSyncAt = 0;
+const cloudProjectWorkingDirs = new Set();
 const sessionRouteCache = new Map();
 const sessionUploadOffsets = new Map();
 const sessionRetryQueue = new Map();
@@ -2503,7 +2504,7 @@ async function tick(context) {
   // healthy, skip claiming entirely.
   const healthyAgents = AVAILABLE_AGENTS.filter((name) => agentHealth.isHealthy(name));
   if (healthyAgents.length === 0) return;
-  const repoCapabilities = fleetRepoCapabilities();
+  const repoCapabilities = fleetRepoCapabilities(Date.now(), [...cloudProjectWorkingDirs]);
   const payload = await api(context, "POST", "/api/commands/claim", {
     daemonId: context.daemonId,
     available_agents: healthyAgents,
@@ -2774,11 +2775,11 @@ async function heartbeatLoop() {
       try {
         const unhealthy = agentHealth.unhealthyAgents();
         const healthyAgents = AVAILABLE_AGENTS.filter((agent) => agentHealth.isHealthy(agent));
-        const repoCapabilities = fleetRepoCapabilities();
+        const repoCapabilities = fleetRepoCapabilities(Date.now(), [...cloudProjectWorkingDirs]);
         const heldByAgent = Object.fromEntries(
           AVAILABLE_AGENTS.map((agent) => [agent, quotaRetryQueue.filter((entry) => entry.agent === agent).length]),
         );
-        await api(context, "POST", "/api/daemon/heartbeat", {
+        const heartbeat = await api(context, "POST", "/api/daemon/heartbeat", {
           daemonId: context.daemonId,
           dashboardUrl: DASHBOARD_URL,
           version: VERSION,
@@ -2810,6 +2811,10 @@ async function heartbeatLoop() {
             ? `UNHEALTHY: ${unhealthy.join(", ")} auth failed — run login on the daemon Mac`
             : context.orgId ? `polling ${context.orgId}` : "polling",
         }, 5000);
+        for (const configuredPath of heartbeat?.projectWorkingDirectories ?? []) {
+          if (typeof configuredPath !== "string" || !configuredPath.trim()) continue;
+          cloudProjectWorkingDirs.add(localizePath(configuredPath.trim()));
+        }
         noteContextRecovered(context, "heartbeat");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

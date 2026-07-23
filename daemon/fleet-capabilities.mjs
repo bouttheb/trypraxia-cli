@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -51,9 +51,45 @@ export function scanRepoCapabilities(roots = configuredRepoRoots()) {
   };
 }
 
-export function fleetRepoCapabilities(now = Date.now()) {
+export function scanExplicitProjectCapabilities(paths = []) {
+  const repos = new Map();
+  for (const value of paths) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    try {
+      const candidate = resolve(expandHome(value.trim()));
+      if (!existsSync(candidate) || !statSync(candidate).isDirectory()) continue;
+      const workingDir = realpathSync(candidate);
+      repos.set(workingDir, { name: basename(workingDir), workingDir });
+    } catch {
+      // A Cloud project path is only a capability after this Mac proves that
+      // the directory currently exists. The command preflight remains the
+      // authoritative Git/repository check before any agent starts.
+    }
+  }
+  const inventory = [...repos.values()].sort((a, b) => a.workingDir.localeCompare(b.workingDir));
+  return {
+    workingDirs: inventory.map((repo) => repo.workingDir),
+    repoNames: [...new Set(inventory.map((repo) => repo.name))].sort(),
+    repos: inventory,
+  };
+}
+
+export function mergeRepoCapabilities(...groups) {
+  const repos = new Map();
+  for (const group of groups) {
+    for (const repo of group?.repos ?? []) repos.set(repo.workingDir, repo);
+  }
+  const inventory = [...repos.values()].sort((a, b) => a.workingDir.localeCompare(b.workingDir));
+  return {
+    workingDirs: inventory.map((repo) => repo.workingDir),
+    repoNames: [...new Set(inventory.map((repo) => repo.name))].sort(),
+    repos: inventory,
+  };
+}
+
+export function fleetRepoCapabilities(now = Date.now(), explicitProjectPaths = []) {
   const roots = configuredRepoRoots();
-  const rootsKey = roots.join("\n");
+  const rootsKey = [...roots, "--cloud-projects--", ...explicitProjectPaths].join("\n");
   if (
     capabilityCache.value
     && capabilityCache.rootsKey === rootsKey
@@ -61,7 +97,10 @@ export function fleetRepoCapabilities(now = Date.now()) {
   ) {
     return capabilityCache.value;
   }
-  const value = scanRepoCapabilities(roots);
+  const value = mergeRepoCapabilities(
+    scanRepoCapabilities(roots),
+    scanExplicitProjectCapabilities(explicitProjectPaths),
+  );
   capabilityCache = { checkedAt: now, rootsKey, value };
   return value;
 }

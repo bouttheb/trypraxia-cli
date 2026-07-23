@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configuredRepoRoots, scanRepoCapabilities } from "../daemon/fleet-capabilities.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const daemonPath = join(repoRoot, "daemon", "dashboard-daemon.mjs");
@@ -154,6 +155,9 @@ function printDoctor() {
   const dockerImage = envValue(env, "PRAXIA_DOCKER_IMAGE");
   const configuredBackend = envValue(env, "PRAXIA_DEFAULT_EXECUTION_BACKEND", dockerImage ? "docker" : "worktree");
   const forwardedAgentEnv = envValue(env, "PRAXIA_AGENT_ENV_ALLOWLIST");
+  const repoEnvironment = { ...Object.fromEntries(env), ...process.env };
+  const repoRoots = configuredRepoRoots(repoEnvironment);
+  const repoCapabilities = scanRepoCapabilities(repoRoots);
 
   console.log("Praxia daemon doctor");
   console.log(`- Config file: ${existsSync(daemonEnvPath) ? daemonEnvPath : "missing"}`);
@@ -167,6 +171,11 @@ function printDoctor() {
   console.log(`- Execution backend: ${configuredBackend}`);
   console.log(`- Docker agent image: ${dockerImage || "not configured"}`);
   console.log(`- Extra agent environment: ${forwardedAgentEnv || "none"}`);
+  console.log(`- Repository scan roots: ${repoRoots.join(", ")}`);
+  console.log(`- Locally discovered repositories: ${repoCapabilities.repoNames.length ? repoCapabilities.repoNames.join(", ") : "none"}`);
+  if (repoCapabilities.workingDirs.length === 0) {
+    console.log("- REPOSITORY NOTE: no Git checkout was found under the scan roots. After start, Praxia also checks the exact project paths configured in your Cloud workspace.");
+  }
 
   if (hasFleetToken && fleetOrganizationIds.length === 0) {
     console.log("- CONFIG ERROR: the fleet token has no recorded organization grants; run daemon login again with an organization pairing code.");
