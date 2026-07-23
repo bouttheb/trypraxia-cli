@@ -90,11 +90,7 @@ export function mergeRepoCapabilities(...groups) {
 export function fleetRepoCapabilities(now = Date.now(), explicitProjectPaths = []) {
   const roots = configuredRepoRoots();
   const rootsKey = [...roots, "--cloud-projects--", ...explicitProjectPaths].join("\n");
-  if (
-    capabilityCache.value
-    && capabilityCache.rootsKey === rootsKey
-    && now - capabilityCache.checkedAt < CACHE_MS
-  ) {
+  if (capabilityCache.value && capabilityCache.rootsKey === rootsKey && now - capabilityCache.checkedAt < CACHE_MS) {
     return capabilityCache.value;
   }
   const value = mergeRepoCapabilities(

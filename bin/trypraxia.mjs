@@ -67,7 +67,10 @@ function readEnvMap(path) {
     const index = trimmed.indexOf("=");
     if (index < 0) continue;
     const key = trimmed.slice(0, index).trim();
-    const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
+    const value = trimmed
+      .slice(index + 1)
+      .trim()
+      .replace(/^["']|["']$/g, "");
     values.set(key, value);
   }
   return values;
@@ -111,7 +114,9 @@ function printGithubStatus({ failIfDisconnected = true } = {}) {
     return null;
   }
   console.log(`GitHub connected: @${identity.login}`);
-  console.log("Credentials remain in GitHub CLI on this machine; Praxia Cloud receives only this username and connection state.");
+  console.log(
+    "Credentials remain in GitHub CLI on this machine; Praxia Cloud receives only this username and connection state.",
+  );
   return identity.login;
 }
 
@@ -165,24 +170,34 @@ function printDoctor() {
   console.log(`- Daemon ID: ${daemonId}`);
   console.log(`- Navigator root: ${navigatorRoot}`);
   console.log(`- Fleet token: ${hasFleetToken ? "present" : "missing"}`);
-  console.log(`- Organization grants: ${fleetOrganizationIds.length ? fleetOrganizationIds.join(", ") : "none recorded"}`);
+  console.log(
+    `- Organization grants: ${fleetOrganizationIds.length ? fleetOrganizationIds.join(", ") : "none recorded"}`,
+  );
   console.log(`- Device token: ${hasDeviceToken ? "present" : "missing"}`);
   console.log(`- Legacy write key: ${hasLegacyKey ? "present" : "missing"}`);
   console.log(`- Execution backend: ${configuredBackend}`);
   console.log(`- Docker agent image: ${dockerImage || "not configured"}`);
   console.log(`- Extra agent environment: ${forwardedAgentEnv || "none"}`);
   console.log(`- Repository scan roots: ${repoRoots.join(", ")}`);
-  console.log(`- Locally discovered repositories: ${repoCapabilities.repoNames.length ? repoCapabilities.repoNames.join(", ") : "none"}`);
+  console.log(
+    `- Locally discovered repositories: ${repoCapabilities.repoNames.length ? repoCapabilities.repoNames.join(", ") : "none"}`,
+  );
   if (repoCapabilities.workingDirs.length === 0) {
-    console.log("- REPOSITORY NOTE: no Git checkout was found under the scan roots. After start, Praxia also checks the exact project paths configured in your Cloud workspace.");
+    console.log(
+      "- REPOSITORY NOTE: no Git checkout was found under the scan roots. After start, Praxia also checks the exact project paths configured in your Cloud workspace.",
+    );
   }
 
   if (hasFleetToken && fleetOrganizationIds.length === 0) {
-    console.log("- CONFIG ERROR: the fleet token has no recorded organization grants; run daemon login again with an organization pairing code.");
+    console.log(
+      "- CONFIG ERROR: the fleet token has no recorded organization grants; run daemon login again with an organization pairing code.",
+    );
     process.exitCode = 1;
   }
   if (url.startsWith("https://") && !hasUsableFleetConfig && !hasDeviceToken) {
-    console.log("- SECURITY ERROR: Praxia Cloud requires a fleet or legacy device token; the write key is self-hosted only.");
+    console.log(
+      "- SECURITY ERROR: Praxia Cloud requires a fleet or legacy device token; the write key is self-hosted only.",
+    );
     process.exitCode = 1;
   }
   if (configuredBackend === "local") {
@@ -209,7 +224,9 @@ function printDoctor() {
   console.log(`  - Account: ${github.login ? `@${github.login}` : "not connected"}`);
 
   if (!hasUsableFleetConfig && !hasDeviceToken && !hasLegacyKey) {
-    console.log("\nRun `npx --yes github:bouttheb/trypraxia-cli daemon login --url <url> --code <code>` to pair this machine.");
+    console.log(
+      "\nRun `npx --yes github:bouttheb/trypraxia-cli daemon login --url <url> --code <code>` to pair this machine.",
+    );
     process.exitCode = 1;
   }
 }
