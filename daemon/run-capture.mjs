@@ -6,14 +6,12 @@
 // POST /api/daemon/run-events after the run finishes. Files are deleted only
 // after the server acknowledges every chunk.
 
-import {
-  appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const DEFAULT_RUN_EVENTS_DIR = join(homedir(), ".praxia-cloud", "run-events");
-const MAX_EVENT_BYTES = 256_000;         // one oversized tool dump can't sink an upload
+const MAX_EVENT_BYTES = 256_000; // one oversized tool dump can't sink an upload
 const CHUNK_EVENTS = 500;
 const CHUNK_BYTES = 1_000_000;
 
@@ -78,8 +76,15 @@ function truncatePayload(payload) {
  * deriver can improve later without daemon changes.
  */
 export function createRunCapture({
-  id, commandId = null, projectId = null, organizationId = null, agent, source = "daemon_run",
-  mode = "raw", dir = DEFAULT_RUN_EVENTS_DIR, seqOffset = 0,
+  id,
+  commandId = null,
+  projectId = null,
+  organizationId = null,
+  agent,
+  source = "daemon_run",
+  mode = "raw",
+  dir = DEFAULT_RUN_EVENTS_DIR,
+  seqOffset = 0,
 }) {
   mkdirSync(dir, { recursive: true });
   const filePath = join(dir, `${id}.jsonl`);
@@ -114,8 +119,14 @@ export function createRunCapture({
     if (event?.type === "assistant") {
       const content = event.message?.content;
       const text = Array.isArray(content)
-        ? content.filter((item) => item?.type === "text").map((item) => item.text || "").join(" ").trim()
-        : typeof content === "string" ? content : "";
+        ? content
+            .filter((item) => item?.type === "text")
+            .map((item) => item.text || "")
+            .join(" ")
+            .trim()
+        : typeof content === "string"
+          ? content
+          : "";
       if (text) lastAssistantText = text;
     }
     writeEvent(event);
