@@ -21,6 +21,7 @@ import { finalizeExecutionBackend, prepareExecutionBackend, wrapExecutionCommand
 import { fleetRepoCapabilities } from "./fleet-capabilities.mjs";
 import { ATTEMPT_SEQ_STRIDE, createRunCapture, sweepRunCaptureDir, uploadRunCaptureFile } from "./run-capture.mjs";
 import { preflightRepo } from "./repo-preflight.mjs";
+import { computeQuotaState } from "./quota-state.mjs";
 import { readSessionTranscript, scanLocalAgentSessions } from "./session-bridge.mjs";
 import { lockSessionRoute, sessionRouteCacheKey, shouldReuseSessionRoute } from "./session-routing.mjs";
 import { createTelemetry } from "./telemetry.mjs";
@@ -91,6 +92,7 @@ const agentHealth = createAgentHealth({ probeIntervalMs: AUTH_PROBE_INTERVAL_MS 
 const telemetry = createTelemetry({ path: join(homedir(), ".praxia-cloud", "telemetry.jsonl") });
 let DAEMON_GIT_SHA = null;
 const DAEMON_STARTED_AT = new Date().toISOString();
+const PRAXIA_PROJECTS_ROOT = resolve(process.env.PRAXIA_PROJECTS_ROOT || join(homedir(), "Praxia Projects"));
 const NAVIGATOR_STATE_DIR = ".praxia-navigator";
 const NAVIGATOR_CLI = join(DAEMON_ROOT, "tools", "praxia-navigator", "bin", "praxia-navigator.mjs");
 // Twice-daily Zoom recording sweep (transcribe -> meetings table -> Navigator/
@@ -663,6 +665,12 @@ ${
     command.workflow_template_label === "Closed-loop acceptance" || command.command_kind === "inspection"
       ? "Acceptance-check override: this run is inspection-only. Do not edit files, install anything, generate artifacts, commit, push, deploy, or contact external systems. The normal keep-building instruction does not apply to this run."
       : "";
+  const newProjectPolicy = command.bootstrap_workspace
+    ? `New customer project workspace:
+- This is the first approved build in a Praxia-created local repository.
+- Build the approved scope here. If no origin exists, use the customer's already-authenticated GitHub CLI to create a private repository named ${safeProjectSlug(command.project_name)}, set it as origin, and push the completed main branch.
+- Never ask the customer for a filesystem path, Git commands, repository settings, or permission to commit or push. If GitHub authentication is genuinely missing, finish and verify everything possible locally, then report that one login boundary plainly.`
+    : "";
   const referencedCommands = formatReferencedCommands(command.referenced_commands);
   const buildContext = command.build_task_id
     ? `Multi-agent build context:\nBuild: #${command.build_id}\nRole: ${command.build_task_role}\nTask: ${command.build_task_title}\nFrozen contract v${command.build_contract_version} (${command.build_contract_hash}):\n${JSON.stringify(command.build_contract, null, 2)}\nAuthorized paths:\n${(command.allowed_paths || []).map((path) => `- ${path}`).join("\n") || "- Whole repository (integrator only)"}\nContract changes are forbidden inside this task. Stop with needs_input if the frozen interface must change.`
@@ -694,22 +702,32 @@ ${formatLearningContext(command.knowledge, command.skills)}
 
 ${buildContext}
 
-You are talking with the user in this project's chat thread. Reply conversationally — your final message is shown directly in the chat. Be concrete about what you did, found, or recommend; push back when something is unwise — state your objection and your chosen path in the reply, then proceed.
+${newProjectPolicy}
 
-Decision policy (autonomy doctrine — Benjamin runs Praxia like a trusted executive: inside the agreed vision, the decisions are yours):
-- Never stop to ask an A-or-B question. Benjamin's standing answer is "do what you recommend" — so choose the option you would recommend, record it under decisions: in your report, and keep working.
+You are talking with the user in this project's chat thread. Your final message is the answer the user sees, not an engineering receipt. Lead with a direct plain-language outcome such as “I fixed it and it is live,” “I found the problem,” or “I have not fixed it yet because…”. Then briefly explain what changed, what is live, and anything genuinely remaining. Never make the user infer whether the request was completed. Do not open with status labels such as INSPECTION or VERIFICATION, and do not mention model/provider names, commit hashes, local paths, command IDs, internal workflow states, or test minutiae unless the user asked for technical detail. Put that evidence in PRAXIA_REPORT instead. Be concrete about what you did, found, or recommend; push back when something is unwise — state your objection and your chosen path in the reply, then proceed.
+
+Decision policy (autonomy doctrine — the customer uses Praxia like a trusted operating executive: inside the agreed vision, the decisions are yours):
+- Never stop to ask a technical A-or-B question. Choose the option you recommend, record it under decisions: in your report, and keep working.
 - Do not ask for clarification mid-task. Complete the queued command end-to-end. If something is ambiguous, take the most reasonable interpretation, state the assumption in your reply, and continue.
 - Keep building. When the literal ask is done and more safe, clearly-in-scope work remains in the same direction, continue with it instead of stopping at a tiny slice. Preserve existing user changes; validate as you go.
 - Hard boundaries — the ONLY reasons to stop and set needs_input: missing secrets/credentials/logins/MFA, billing or purchases, DNS changes, destructive or irreversible operations (data loss, force pushes, prod resets), external communications nobody asked for, or a true conflict with the project's vision docs.
 - When you stop at a boundary, state exactly what is needed and everything already completed, so a single answer resumes the work.
 
 Definition of done (shipping doctrine — asking for the work IS the authorization to ship it):
-- A request to build, fix, change, or add something is NOT complete until the change is committed, pushed, and deployed, and you have confirmed the deploy is actually serving the change. Benjamin never wants work done and left sitting; he should never have to come back and say "now commit it" or "now deploy it." Treat commit + push + deploy as part of every such request, not a separate task requiring its own approval.
+- A request to build, fix, change, or add something is NOT complete until the change is committed, pushed, merged to the intended delivery branch when the repository workflow requires it, and deployed where the project has a deployment target, and you have confirmed the deploy is actually serving the change. The customer should never have to come back and say "now commit it," "now merge it," or "now deploy it." Treat commit + push + merge + deploy as part of every such request, not separate tasks requiring their own approval.
 - Investigating, designing, planning, or writing a spec is NOT completion when the ask was to build. If you finish a design, implement it in the same run. Only report completed when the working software is live.
 - Verify the deploy against reality — fetch the deployed URL and confirm your change is present, check the deployment status, or run the deployed code path. "It should be live" is not verification. If the deploy is still building, wait for it and confirm.
-- Unblocking the ship is your job and your authority. Failing build, type error, lint gate, merge conflict, stale branch, dirty tree, missing dependency, a deploy that stalls or needs a CLI fallback — diagnose and push it through. These are ordinary work, not boundaries, and not a reason to stop and report success without shipping.
+- Unblocking the ship is your job and your authority. Failing build, type error, lint gate, merge conflict, stale branch, dirty tree, missing dependency, required PR/merge flow, or a deploy that stalls or needs a CLI fallback — diagnose and push it through. These are ordinary work, not boundaries, and not a reason to stop and report success without shipping.
 - The hard boundaries above still apply and still outrank this: never force push, never reset prod, never fix a deploy by deleting data or bypassing a credential you were not given. If a genuine boundary blocks the ship, say plainly that the work is built but NOT live, and name the one thing needed.
 - If the work truly changed no code (a question, an inspection, an analysis), say so in shipped: and skip the rest — this doctrine is about not stranding real changes.
+
+Customer handoff (the visible reply is for a business user, not an engineer):
+- Lead with the outcome and the difference the customer should now experience. Do not lead with filenames, commits, branches, tests, or implementation jargon unless the user explicitly asked for technical detail.
+- Explain how to use what you built in plain language.
+- Name the real verification you completed without asking the customer to interpret code or CI.
+- Propose one concrete acceptance test you can do together and tell the customer exactly what they should see.
+- End with the next recommended business step. Never leave the customer wondering what to do next.
+- If the acceptance test exposes a defect, treat fixing it as part of the same approved build rather than requiring a fresh authorization.
 
 ${acceptancePolicy}
 
@@ -719,7 +737,7 @@ ${command.body}
 After you finish, include this exact block at the end of your response so Praxia can update the dashboard:
 
 PRAXIA_REPORT
-summary: one concise paragraph describing what you completed
+summary: one concise plain-language outcome suitable to show the user; state whether it is fixed/live and omit models, commit hashes, paths, command IDs, and internal workflow jargon
 next: the next useful step or blocker
 completion_percent: integer from 0 to 100 based on the project scope docs
 workflow_step_status: completed, blocked, needs_input, failed, or cancelled
@@ -901,6 +919,7 @@ async function pair() {
   if (!env.has("DAEMON_POLL_INTERVAL_MS")) env.set("DAEMON_POLL_INTERVAL_MS", "5000");
   if (!env.has("DAEMON_CONCURRENCY")) env.set("DAEMON_CONCURRENCY", "2");
   if (!env.has("PRAXIA_NAVIGATOR_ROOT")) env.set("PRAXIA_NAVIGATOR_ROOT", process.cwd());
+  if (!env.has("PRAXIA_PROJECTS_ROOT")) env.set("PRAXIA_PROJECTS_ROOT", join(homedir(), "Praxia Projects"));
   writeEnvMap(envPath, env);
 
   const orgLabel =
@@ -936,6 +955,39 @@ function resolveWorkingDir(value) {
   if (!existsSync(absolute)) return { ok: false, reason: `Working directory does not exist: ${absolute}` };
   const real = realpathSync(absolute);
   return { ok: true, path: real };
+}
+
+function safeProjectSlug(value) {
+  return (
+    String(value || "project")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "project"
+  );
+}
+
+function createCustomerProjectWorkspace(command) {
+  if (command.working_dir || !command.onboarding_plan_item_id) return null;
+  mkdirSync(PRAXIA_PROJECTS_ROOT, { recursive: true });
+  const workspace = join(PRAXIA_PROJECTS_ROOT, `${safeProjectSlug(command.project_name)}-${command.project_id}`);
+  mkdirSync(workspace, { recursive: true });
+  if (!existsSync(join(workspace, ".git"))) {
+    execFileSync("git", ["init", "-b", "main"], { cwd: workspace, stdio: "ignore" });
+    writeFileSync(
+      join(workspace, "README.md"),
+      `# ${command.project_name}\n\nThis project workspace is managed by Praxia. Its operating vision lives in Praxia Cloud.\n`,
+      "utf8",
+    );
+    writeFileSync(join(workspace, ".gitignore"), ".env\n.env.*\nnode_modules/\n.DS_Store\n", "utf8");
+    execFileSync("git", ["add", "README.md", ".gitignore"], { cwd: workspace, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Praxia", "-c", "user.email=praxia@localhost", "commit", "-m", "Initialize Praxia project"],
+      { cwd: workspace, stdio: "ignore" },
+    );
+  }
+  return realpathSync(workspace);
 }
 
 function runProcess({
@@ -2929,6 +2981,28 @@ async function tick(context) {
   if (!command) return;
   log(`claimed command ${command.id} for ${command.project_name} (${context.label})`);
 
+  if (!command.working_dir && command.onboarding_plan_item_id) {
+    try {
+      const workspace = createCustomerProjectWorkspace(command);
+      if (!workspace) throw new Error("workspace path could not be created");
+      await api(context, "PATCH", `/api/daemon/projects/${command.project_id}/provision`, {
+        workingDirectory: workspace,
+      });
+      command.working_dir = workspace;
+      command.bootstrap_workspace = true;
+      cloudProjectWorkingDirs.add(workspace);
+      log(`prepared customer workspace for ${command.project_name} at ${workspace}`);
+    } catch (error) {
+      await releaseCommand(context, command, {
+        ok: false,
+        state: "workspace-provision-failed",
+        reason: `Could not prepare the new project workspace: ${error instanceof Error ? error.message : String(error)}`,
+        warnings: [],
+      });
+      return;
+    }
+  }
+
   const cwd = resolveWorkingDir(command.working_dir);
   if (!cwd.ok) {
     await releaseCommand(context, command, {
@@ -3312,15 +3386,11 @@ async function heartbeatLoop() {
                 backfill: sessionSyncHealth.backfill,
               },
             },
-            quotaState: Object.fromEntries(
-              healthyAgents.map((agent) => [
-                agent,
-                {
-                  remainingRatio: heldByAgent[agent] > 0 ? 0.05 : 1,
-                  heldCommands: heldByAgent[agent],
-                },
-              ]),
-            ),
+            // Real subscription-quota signal: an agent is only "exhausted" when
+            // a command actually hit its plan limit and is held for retry, not
+            // merely because it is busy. Feeds the router's shadow cost so paid
+            // bandwidth is used to its cap instead of fled the moment it's busy.
+            quotaState: computeQuotaState(healthyAgents, quotaRetryQueue),
             note: unhealthy.length
               ? `UNHEALTHY: ${unhealthy.join(", ")} auth failed — run login on the daemon Mac`
               : context.orgId
